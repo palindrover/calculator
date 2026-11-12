@@ -8,4 +8,4 @@ unary &rarr; ('+' | '-')* power
 
 power &rarr; primary \[ '^' unary \]
 
-primary &rarr; Number | '(' expr ')'
+primary &rarr; Number | Ident | '(' expr ')'
