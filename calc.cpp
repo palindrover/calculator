@@ -1,11 +1,14 @@
 #include <cmath>
+#include <cstdlib>
 #include <iomanip>
 #include <cstddef>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
+#include <numbers>
 #include <unistd.h>
 
 /*
@@ -16,7 +19,7 @@ expr -> term ( ('+' | '-') term )*
 term -> unary ( ('*' | '/' | '%') unary )*
 unary -> ('+' | '-')* power
 power -> primary [ '^' unary ]
-primary -> Number | '(' expr ')'
+primary -> Number | Ident | '(' expr ')'
 
 */
 
@@ -25,6 +28,7 @@ bool interactive = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
 enum Tag
 {
 	Number,
+	Ident,
 	Plus,
 	Minus,
 	Star,
@@ -35,6 +39,12 @@ enum Tag
 	RParen,
 	End,
 	Error
+};
+
+const std::unordered_map<std::string, double> Idents
+{
+	{"pi", std::numbers::pi},
+	{"e", std::numbers::e}
 };
 
 class Token
@@ -49,6 +59,11 @@ public:
 static inline bool isDigit(char c)
 {
 	return c >= '0' && c <= '9';
+}
+
+static inline bool isLetter(char c)
+{
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
 
 std::vector<Token> lexer(const std::string& str)
@@ -97,18 +112,40 @@ std::vector<Token> lexer(const std::string& str)
 			break;
 
 		default:
-			if(isDigit(str[i]))
+			if(isLetter(str[i]))
 			{
 				std::size_t start = i;
-				int dots = 0;
-				while(i < str.size() && (isDigit(str[i]) || str[i] == '.'))
+
+				while(i < str.size() && (isLetter(str[i]) || isDigit(str[i]) || 
+							str[i] == '_')) i++;
+
+				tokens.push_back(Token{start, i - start, Ident, 
+						str.substr(start, i - start)});
+				i--;
+			}
+			else if(isDigit(str[i]))
+			{
+				std::size_t start = i;
+
+				while(i < str.size() && isDigit(str[i])) i++;
+
+				if(i < str.size() && str[i] == '.')
 				{
-					if(str[i] == '.')
-					{
-						dots++;
-						if(dots > 1) break;
-					}
 					i++;
+					while(i < str.size() && isDigit(str[i]))i++;
+				}
+
+				if(i < str.size() && (str[i] == 'e' || str[i] == 'E'))
+				{
+					std::size_t beforeExp = i;
+					i++;
+
+					if(i < str.size() && (str[i] == '+' || str[i] == '-')) i++;
+
+					if(i < str.size() && isDigit(str[i]))
+						while(i < str.size() && isDigit(str[i])) i++;
+					else
+						i = beforeExp;
 				}
 				
 				tokens.push_back(Token{start, i - start, Number,
@@ -128,6 +165,7 @@ std::string tagName(Tag tag)
 	switch (tag)
 	{
 	case Number: return "Number";
+	case Ident: return "Ident";
 	case Plus: return "Plus";
 	case Minus: return "Minus";
 	case Star: return "Star";
@@ -147,6 +185,7 @@ std::string tagChar(Tag tag)
 	switch (tag)
 	{
 	case Number: return "Number";
+	case Ident: return "Ident";
 	case Plus: return "+";
 	case Minus: return "-";
 	case Star: return "*";
@@ -167,6 +206,12 @@ struct ParseError : std::runtime_error
 	ParseError(const std::string& msg, std::size_t pos)
 		: std::runtime_error(msg), pos(pos) {}
 };
+
+double checked(double x, std::size_t pos)
+{
+	if(std::isnan(x) || std::isinf(x)) throw ParseError("переполнение", pos);
+	return x;
+}
 
 class Parser
 {
@@ -242,15 +287,15 @@ private:
 			switch (operatorTag) 
 			{
 			case Star:
-				result *= rhs;
+				result = checked(result * rhs, operatorPos);
 				break;
 			case Slash:
 				if(rhs == 0) throw ParseError("деление на ноль", operatorPos);
-				result /= rhs;
+				result = checked(result / rhs, operatorPos);
 				break;
 			case Mod:
 				if(rhs == 0) throw ParseError("деление на ноль", operatorPos);
-				result = std::fmod(result, rhs);
+				result = checked(std::fmod(result, rhs), operatorPos);
 				break;
 			default:
 				break;
@@ -267,16 +312,17 @@ private:
 		while(current().tag == Plus || current().tag == Minus)
 		{
 			Tag operatorTag = current().tag;
+			std::size_t operatorPos = current().pos;
 			advance();
 			double rhs = parseTerm();
 
 			switch (operatorTag)
 			{
 			case Plus:
-				result += rhs;
+				result = checked(result + rhs, operatorPos);
 				break;
 			case Minus:
-				result -= rhs;
+				result = checked(result - rhs, operatorPos);
 				break;
 			default:
 				break;
@@ -293,11 +339,19 @@ private:
 		switch (current().tag)
 		{
 		case Number:
-			try{ value = std::stod(current().text); }
-			catch (const std::out_of_range&) { throw ParseError("слишком большое число",
-					current().pos); }
+			value = checked(std::strtod(current().text.c_str(), nullptr), current().pos);
 			advance();
 			return value;
+
+		case Ident:
+		{
+			auto it = Idents.find(current().text);
+			if(it == Idents.end())throw ParseError(std::string("неизвестная константа ") +
+					current().text, current().pos);
+			value = it->second;
+			advance();
+			return value;
+		}
 
 		case LParen:
 			advance();
