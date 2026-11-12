@@ -3,6 +3,8 @@
 #include <iomanip>
 #include <cstddef>
 #include <iostream>
+#include <memory>
+#include <ostream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -17,15 +19,17 @@
 
 expr -> term ( ('+' | '-') term )*
 term -> unary ( ('*' | '/' | '%') unary )*
-unary -> ('+' | '-')* power
+unary -> ('+' | '-') unary | power
 power -> primary [ '^' unary ]
 primary -> Number | Ident | '(' expr ')'
 
 */
 
+using Env = std::unordered_map<std::string, double>;
+
 bool interactive = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
 
-enum Tag
+enum class Tag
 {
 	Number,
 	Ident,
@@ -41,7 +45,23 @@ enum Tag
 	Error
 };
 
-const std::unordered_map<std::string, double> Idents
+enum class BinOp
+{
+	Add,
+	Sub,
+	Mul,
+	Div,
+	Mod,
+	Pow
+};
+
+enum class UnOp
+{
+	Neg,
+	Plus
+};
+
+const Env Idents
 {
 	{"pi", std::numbers::pi},
 	{"e", std::numbers::e}
@@ -75,35 +95,35 @@ std::vector<Token> lexer(const std::string& str)
 		switch (str[i]) 
 		{
 		case '(':
-			tokens.push_back(Token{i, 1, LParen, "("});
+			tokens.push_back(Token{i, 1, Tag::LParen, "("});
 			break;
 
 		case ')':
-			tokens.push_back(Token{i, 1, RParen, ")"});
+			tokens.push_back(Token{i, 1, Tag::RParen, ")"});
 			break;
 
 		case '+':
-			tokens.push_back(Token{i, 1, Plus, "+"});
+			tokens.push_back(Token{i, 1, Tag::Plus, "+"});
 			break;
 
 		case '-':
-			tokens.push_back(Token{i, 1, Minus, "-"});
+			tokens.push_back(Token{i, 1, Tag::Minus, "-"});
 			break;
 
 		case '*':
-			tokens.push_back(Token{i, 1, Star, "*"});
+			tokens.push_back(Token{i, 1, Tag::Star, "*"});
 			break;
 
 		case '/':
-			tokens.push_back(Token{i, 1, Slash, "/"});
+			tokens.push_back(Token{i, 1, Tag::Slash, "/"});
 			break;
 
 		case '^':
-			tokens.push_back(Token{i, 1, Caret, "^"});
+			tokens.push_back(Token{i, 1, Tag::Caret, "^"});
 			break;
 
 		case '%':
-			tokens.push_back(Token{i, 1, Mod, "%"});
+			tokens.push_back(Token{i, 1, Tag::Mod, "%"});
 			break;
 
 		case ' ':
@@ -119,7 +139,7 @@ std::vector<Token> lexer(const std::string& str)
 				while(i < str.size() && (isLetter(str[i]) || isDigit(str[i]) || 
 							str[i] == '_')) i++;
 
-				tokens.push_back(Token{start, i - start, Ident, 
+				tokens.push_back(Token{start, i - start, Tag::Ident, 
 						str.substr(start, i - start)});
 				i--;
 			}
@@ -148,20 +168,21 @@ std::vector<Token> lexer(const std::string& str)
 						i = beforeExp;
 				}
 				
-				tokens.push_back(Token{start, i - start, Number,
+				tokens.push_back(Token{start, i - start, Tag::Number,
 							str.substr(start, i - start)});
 				i--;
 			}
-			else tokens.push_back(Token{i, 1, Error, std::string(1, str[i])});
+			else tokens.push_back(Token{i, 1, Tag::Error, std::string(1, str[i])});
 		}
 	}
-	tokens.push_back(Token{str.size(), 0, End, ""});
+	tokens.push_back(Token{str.size(), 0, Tag::End, ""});
 
 	return tokens;
 }
 
 std::string tagName(Tag tag)
 {
+	using enum Tag;
 	switch (tag)
 	{
 	case Number: return "Number";
@@ -182,6 +203,7 @@ std::string tagName(Tag tag)
 
 std::string tagChar(Tag tag)
 {
+	using enum Tag;
 	switch (tag)
 	{
 	case Number: return "Number";
@@ -200,28 +222,223 @@ std::string tagChar(Tag tag)
 	return "";
 }
 
-struct ParseError : std::runtime_error
+struct PosError : std::runtime_error
 {
-	std::size_t pos;
-	ParseError(const std::string& msg, std::size_t pos)
-		: std::runtime_error(msg), pos(pos) {}
+	std::size_t pos, len;
+	PosError(const std::string& msg, std::size_t pos, std::size_t len)
+		: std::runtime_error(msg), pos(pos), len(len) {}
 };
 
-double checked(double x, std::size_t pos)
+struct ParseError : PosError
 {
-	if(std::isnan(x) || std::isinf(x)) throw ParseError("переполнение", pos);
+	using PosError::PosError;
+};
+
+struct EvalError : PosError
+{
+	using PosError::PosError;
+};
+
+double checked(double x, std::size_t pos, std::size_t len)
+{
+	if(std::isnan(x) || std::isinf(x)) throw EvalError("переполнение", pos, len);
 	return x;
 }
+
+
+static inline UnOp tagToUnary(Tag tag)
+{
+	switch (tag) 
+	{
+	case Tag::Minus:
+		return UnOp::Neg;
+	case Tag::Plus:
+		return UnOp::Plus;
+	default:
+		break;
+	}
+}
+
+static inline BinOp tagToBinary(Tag tag)
+{
+	switch (tag) 
+	{
+	case Tag::Plus:
+		return BinOp::Add;
+	case Tag::Minus:
+		return BinOp::Sub;
+	case Tag::Star:
+		return BinOp::Mul;
+	case Tag::Slash:
+		return BinOp::Div;
+	case Tag::Mod:
+		return BinOp::Mod;
+	case Tag::Caret:
+		return BinOp::Pow;
+	default:
+		break;
+	}
+}
+
+static inline char opSymbol(BinOp op)
+{
+	using enum BinOp;
+	switch(op)
+	{
+	case Add:
+		return '+';
+	case Sub:
+		return '-';
+	case Mul:
+		return '*';
+	case Div:
+		return '/';
+	case Mod:
+		return '%';
+	case Pow:
+		return '^';
+		break;
+	}
+}
+
+struct Node
+{
+	std::size_t pos, len;
+
+	Node(std::size_t pos, std::size_t len) : pos(pos), len(len) {}
+	virtual ~Node() = default;
+	virtual double eval(const Env& env) const = 0;
+	virtual void print(std::ostream& out) const = 0;
+};
+
+struct BinaryNode : Node
+{
+	BinOp op;
+	std::unique_ptr<Node> left, right;
+
+	BinaryNode(BinOp op, std::unique_ptr<Node> left, std::unique_ptr<Node> right,
+		std::size_t pos, std::size_t len) : Node(pos, len), op(op),
+		left(std::move(left)), right(std::move(right)) {}
+
+	double eval(const Env& env) const override
+	{
+		using enum BinOp;
+		double leftVal = left->eval(env), rightVal = right->eval(env);
+
+		switch(op)
+		{
+		case Add:
+			return checked(leftVal + rightVal, pos, len);
+		case Sub:
+			return checked(leftVal - rightVal, pos, len);
+		case Mul:
+			return checked(leftVal * rightVal, pos, len);
+		case Div:
+			if(rightVal == 0) throw EvalError("деление на ноль", pos, len);
+			return checked(leftVal / rightVal, pos, len);
+		case Mod:
+			if(rightVal == 0) throw EvalError("деление на ноль", pos, len);
+			return checked(std::fmod(leftVal, rightVal), pos, len);
+		case Pow:
+			{
+				double result = std::pow(leftVal, rightVal);
+				if(std::isnan(result)) 
+					throw EvalError("результат не определён", pos, len);
+			return checked(result, pos, len);
+			}
+		}
+
+		throw std::logic_error("неизвестный оператор");
+	}
+
+	void print(std::ostream& out) const override
+	{
+		using enum BinOp;
+
+		out << "(" << opSymbol(op) << " ";
+		left->print(out);
+		out << " ";
+		right->print(out);
+		out << ")";
+	}
+};
+
+struct UnaryNode : Node
+{
+	UnOp op;
+	std::unique_ptr<Node> operand;
+
+	UnaryNode(UnOp op, std::unique_ptr<Node> operand, std::size_t pos, std::size_t len) 
+		: Node(pos, len), op(op), operand(std::move(operand)) {}
+
+	double eval(const Env& env) const override
+	{
+		switch(op)
+		{
+		case UnOp::Plus:
+			return operand->eval(env);
+		case UnOp::Neg:
+			return -operand->eval(env);
+		}
+	}
+
+	void print(std::ostream& out) const override
+	{
+		out << '(' << (op == UnOp::Neg ? "- " : "+ ");
+		operand->print(out);
+		out << ')';
+	}
+};
+
+struct NumberNode : Node
+{
+	std::string text;
+
+	NumberNode(std::string text, std::size_t pos, std::size_t len) : Node(pos, len),
+		text(std::move(text)) {}
+
+	double eval(const Env&) const override
+	{
+		return checked(std::strtod(text.c_str(), nullptr), pos, len);
+	}
+
+	void print(std::ostream& out) const override
+	{
+		out << text;
+	}
+};
+
+struct IdentNode : Node
+{
+	std::string text;
+
+	IdentNode(std::string text, std::size_t pos, std::size_t len) : Node(pos, len), 
+		text(std::move(text)) {}
+
+	double eval(const Env& env) const override
+	{
+		auto it = env.find(text);
+		if(it == env.end()) throw EvalError(std::string("неизвестный идентификатор ") 
+				+ text,	pos, len);
+		return it->second;
+	}
+
+	void print(std::ostream& out) const override
+	{
+		out << text;
+	}
+};
 
 class Parser
 {
 public:
 	explicit Parser(std::vector<Token> tokens) : tokens(std::move(tokens)) {}
-	double parse()
+	std::unique_ptr<Node> parse()
 	{
-		double value = parseExpr();
-		if(current().tag != End)
-			throw ParseError("лишние символы после выражения", current().pos);
+		std::unique_ptr<Node> value = parseExpr();
+		if(current().tag != Tag::End)
+			throw ParseError("лишние символы после выражения", current().pos,
+					current().len);
 		return value;
 	}
 
@@ -236,142 +453,120 @@ private:
 
 	void advance()
 	{
-		if(current().tag != End) pos++;
+		if(current().tag != Tag::End) pos++;
 	}
 
 	void expect(Tag tag)
 	{
 		if(current().tag != tag)
-			throw ParseError(std::string("ожидалось ") + tagChar(tag), current().pos);
+			throw ParseError(std::string("ожидалось ") + tagChar(tag), current().pos,
+					current().len);
 		else advance();
 	}
 
-	double parsePower()
+	std::unique_ptr<Node> parsePower()
 	{
-		double result = parsePrimary();
+		std::unique_ptr<Node> result = parsePrimary();
 
-		if(current().tag == Caret)
+		if(current().tag == Tag::Caret)
 		{
-			std::size_t operatorPos = current().pos;
+			BinOp op = tagToBinary(current().tag);
+			std::size_t opPos = current().pos, opLen = current().len;
 			advance();
-			result = std::pow(result, parseUnary());
-			if(std::isnan(result) || std::isinf(result))
-				throw ParseError("невозможное возведение в степень", operatorPos);
+
+			result = std::make_unique<BinaryNode>(op, std::move(result), parseUnary(),
+					opPos, opLen);
 		}
 
 		return result;
 	}
 
-	double parseUnary()
+	std::unique_ptr<Node> parseUnary()
 	{
-		int cnt = 0;
-		while(current().tag == Plus || current().tag == Minus)
+		if(current().tag == Tag::Plus || current().tag == Tag::Minus)
 		{
-			if(current().tag == Minus) cnt++;
+			UnOp op = tagToUnary(current().tag);
+			std::size_t opPos = current().pos, opLen = current().len;
 			advance();
+			return std::make_unique<UnaryNode>(op, parseUnary(), opPos, opLen);
 		}
-		return cnt % 2 ? -1 * parsePower() : parsePower();
+		else return parsePower();
 	}
 
-	double parseTerm()
+	std::unique_ptr<Node> parseTerm()
 	{
-		double result = parseUnary();
+		std::unique_ptr<Node> result = parseUnary();
 
-		while(current().tag == Star || current().tag == Slash || current().tag == Mod)
+		while(current().tag == Tag::Star || current().tag == Tag::Slash ||
+				current().tag == Tag::Mod)
 		{
-			Tag operatorTag = current().tag;
-			std::size_t operatorPos = current().pos;
+			BinOp op = tagToBinary(current().tag);
+			std::size_t opPos = current().pos, opLen = current().len;
 			advance();
-			double rhs = parseUnary();
 
-			switch (operatorTag) 
-			{
-			case Star:
-				result = checked(result * rhs, operatorPos);
-				break;
-			case Slash:
-				if(rhs == 0) throw ParseError("деление на ноль", operatorPos);
-				result = checked(result / rhs, operatorPos);
-				break;
-			case Mod:
-				if(rhs == 0) throw ParseError("деление на ноль", operatorPos);
-				result = checked(std::fmod(result, rhs), operatorPos);
-				break;
-			default:
-				break;
-			}
+			result = std::make_unique<BinaryNode>(op, std::move(result), parseUnary(),
+					opPos, opLen);
 		}
 
 		return result;
 	}
 
-	double parseExpr()
+	std::unique_ptr<Node> parseExpr()
 	{
-		double result = parseTerm();
+		std::unique_ptr<Node> result = parseTerm();
 
-		while(current().tag == Plus || current().tag == Minus)
+		while(current().tag == Tag::Plus || current().tag == Tag::Minus)
 		{
-			Tag operatorTag = current().tag;
-			std::size_t operatorPos = current().pos;
+			BinOp op = tagToBinary(current().tag);
+			std::size_t opPos = current().pos, opLen = current().len;
 			advance();
-			double rhs = parseTerm();
-
-			switch (operatorTag)
-			{
-			case Plus:
-				result = checked(result + rhs, operatorPos);
-				break;
-			case Minus:
-				result = checked(result - rhs, operatorPos);
-				break;
-			default:
-				break;
-			}
+			
+			result = std::make_unique<BinaryNode>(op, std::move(result), parseTerm(),
+					opPos, opLen);
 		}
 
 		return result;
 	}
 
-	double parsePrimary()
+	std::unique_ptr<Node> parsePrimary()
 	{
-		double value;
+		std::unique_ptr<Node> node;
 
 		switch (current().tag)
 		{
-		case Number:
-			value = checked(std::strtod(current().text.c_str(), nullptr), current().pos);
+		case Tag::Number:
+			node = std::make_unique<NumberNode>(current().text, current().pos,
+					current().len);
 			advance();
-			return value;
+			return node;
 
-		case Ident:
-		{
-			auto it = Idents.find(current().text);
-			if(it == Idents.end())throw ParseError(std::string("неизвестная константа ") +
-					current().text, current().pos);
-			value = it->second;
+		case Tag::Ident:
+			node = std::make_unique<IdentNode>(current().text, current().pos,
+					current().len);
 			advance();
-			return value;
-		}
+			return node;
 
-		case LParen:
+		case Tag::LParen:
 			advance();
-			value = parseExpr();
-			expect(RParen);
-			return value;
+			node = parseExpr();
+			expect(Tag::RParen);
+			return node;
 
-		case Error:
+		case Tag::Error:
 			throw ParseError(std::string("неизвестный символ ") + current().text, 
-					current().pos);
+					current().pos, current().len);
 
-		case End:
-			throw ParseError("неожиданный конец выражения", current().pos);
+		case Tag::End:
+			throw ParseError("неожиданный конец выражения", current().pos,
+					current().len);
 
 		default:
-			throw ParseError("ожидалось число или (", current().pos);
+			throw ParseError("ожидалось число или (", current().pos, current().len);
 		}
 	}
 
 };
+
 
 int main()
 {
@@ -383,22 +578,22 @@ int main()
 		try
 		{
 			Parser parser(lexer(s));
-			double result = parser.parse();
+			std::unique_ptr<Node> tree = parser.parse();
+			double result = tree->eval(Idents);
 
-			if(interactive)
+			if(interactive)	
 				std::cout << "\x1b[A\r" << s << " = " << result << "\n\n";
 			else
 				std::cout << result << "\n\n";
 		}
-		catch (const ParseError& e)
+		catch (const PosError& e)
 		{
 			if(interactive)
-				std::cout /*<< s << '\n'*/ << std::string(e.pos, ' ') << "^\n" 
+				std::cout << std::string(e.pos, ' ') << std::string(e.len, '^') << "\n" 
 					<< "Ошибка: " << e.what() << "\n\n";
 			else
-				std::cout << s << '\n' << std::string(e.pos, ' ') << "^\n" 
-					<< "Ошибка: " << e.what() << "\n\n";
-
+				std::cout << s << '\n' << std::string(e.pos, ' ') << 
+					std::string(e.len, '^') << "\n" << "Ошибка: " << e.what() << "\n\n";
 		}
 	}
 

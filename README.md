@@ -4,7 +4,7 @@ expr &rarr; term ( ('+' | '-') term )*
 
 term &rarr; unary ( ('\*' | '/' | '%') unary )*
 
-unary &rarr; ('+' | '-')* power
+unary &rarr; ('+' | '-') unary | power
 
 power &rarr; primary \[ '^' unary \]
 
