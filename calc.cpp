@@ -9,6 +9,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 #include <numbers>
 #include <unistd.h>
@@ -257,6 +258,7 @@ static inline UnOp tagToUnary(Tag tag)
 	default:
 		break;
 	}
+	throw std::logic_error("неизвестный оператор");
 }
 
 static inline BinOp tagToBinary(Tag tag)
@@ -278,6 +280,7 @@ static inline BinOp tagToBinary(Tag tag)
 	default:
 		break;
 	}
+	throw std::logic_error("неизвестный оператор");
 }
 
 static inline char opSymbol(BinOp op)
@@ -299,133 +302,129 @@ static inline char opSymbol(BinOp op)
 		return '^';
 		break;
 	}
+	throw std::logic_error("неизвестный оператор");
 }
 
-struct Node
-{
-	std::size_t pos, len;
+struct Node;
 
-	Node(std::size_t pos, std::size_t len) : pos(pos), len(len) {}
-	virtual ~Node() = default;
-	virtual double eval(const Env& env) const = 0;
-	virtual void print(std::ostream& out) const = 0;
-};
-
-struct BinaryNode : Node
+struct BinaryNode
 {
 	BinOp op;
 	std::unique_ptr<Node> left, right;
+	std::size_t pos, len;
+};
 
-	BinaryNode(BinOp op, std::unique_ptr<Node> left, std::unique_ptr<Node> right,
-		std::size_t pos, std::size_t len) : Node(pos, len), op(op),
-		left(std::move(left)), right(std::move(right)) {}
+struct UnaryNode
+{
+	UnOp op;
+	std::unique_ptr<Node> operand;
+	std::size_t pos, len;
+};
 
-	double eval(const Env& env) const override
+struct NumberNode
+{
+	std::string text;
+	std::size_t pos, len;
+};
+
+struct IdentNode
+{
+	std::string text;
+	std::size_t pos, len;
+};
+
+struct Node
+{
+	std::variant<NumberNode, IdentNode, UnaryNode, BinaryNode> v;
+};
+
+struct PrintVisitor
+{
+	std::ostream& out;
+
+	void operator()(const NumberNode& node) const {out << node.text;}
+	void operator()(const IdentNode& node) const {out << node.text;}
+	void operator()(const UnaryNode& node) const
 	{
-		using enum BinOp;
-		double leftVal = left->eval(env), rightVal = right->eval(env);
-
-		switch(op)
+		switch(node.op)
 		{
-		case Add:
-			return checked(leftVal + rightVal, pos, len);
-		case Sub:
-			return checked(leftVal - rightVal, pos, len);
-		case Mul:
-			return checked(leftVal * rightVal, pos, len);
-		case Div:
-			if(rightVal == 0) throw EvalError("деление на ноль", pos, len);
-			return checked(leftVal / rightVal, pos, len);
-		case Mod:
-			if(rightVal == 0) throw EvalError("деление на ноль", pos, len);
-			return checked(std::fmod(leftVal, rightVal), pos, len);
-		case Pow:
-			{
-				double result = std::pow(leftVal, rightVal);
-				if(std::isnan(result)) 
-					throw EvalError("результат не определён", pos, len);
-			return checked(result, pos, len);
-			}
+		case UnOp::Neg:
+			out << "(-";
+			std::visit(*this, node.operand->v);
+			out << ")";
+			break;
+		case UnOp::Plus:
+			std::visit(*this, node.operand->v);
 		}
-
-		throw std::logic_error("неизвестный оператор");
 	}
-
-	void print(std::ostream& out) const override
+	void operator()(const BinaryNode& node) const
 	{
-		using enum BinOp;
-
-		out << "(" << opSymbol(op) << " ";
-		left->print(out);
+		out << "(" << opSymbol(node.op) << " ";
+		std::visit(*this, node.left->v);
 		out << " ";
-		right->print(out);
+		std::visit(*this, node.right->v);
 		out << ")";
 	}
 };
 
-struct UnaryNode : Node
+struct EvalVisitor
 {
-	UnOp op;
-	std::unique_ptr<Node> operand;
+	const Env& env;
 
-	UnaryNode(UnOp op, std::unique_ptr<Node> operand, std::size_t pos, std::size_t len) 
-		: Node(pos, len), op(op), operand(std::move(operand)) {}
-
-	double eval(const Env& env) const override
+	double operator()(const NumberNode& node) const 
 	{
-		switch(op)
-		{
-		case UnOp::Plus:
-			return operand->eval(env);
-		case UnOp::Neg:
-			return -operand->eval(env);
-		}
+		return checked(std::strtod(node.text.c_str(), nullptr), node.pos, node.len);
 	}
-
-	void print(std::ostream& out) const override
+	double operator()(const IdentNode& node)const
 	{
-		out << '(' << (op == UnOp::Neg ? "- " : "+ ");
-		operand->print(out);
-		out << ')';
-	}
-};
-
-struct NumberNode : Node
-{
-	std::string text;
-
-	NumberNode(std::string text, std::size_t pos, std::size_t len) : Node(pos, len),
-		text(std::move(text)) {}
-
-	double eval(const Env&) const override
-	{
-		return checked(std::strtod(text.c_str(), nullptr), pos, len);
-	}
-
-	void print(std::ostream& out) const override
-	{
-		out << text;
-	}
-};
-
-struct IdentNode : Node
-{
-	std::string text;
-
-	IdentNode(std::string text, std::size_t pos, std::size_t len) : Node(pos, len), 
-		text(std::move(text)) {}
-
-	double eval(const Env& env) const override
-	{
-		auto it = env.find(text);
-		if(it == env.end()) throw EvalError(std::string("неизвестный идентификатор ") 
-				+ text,	pos, len);
+		auto it = env.find(node.text);
+		if(it == env.end()) throw EvalError(std::string("неизвестный идентификатор ") + 
+				node.text, node.pos, node.len);
 		return it->second;
 	}
-
-	void print(std::ostream& out) const override
+	double operator()(const UnaryNode& node) const
 	{
-		out << text;
+		double val = std::visit(*this, node.operand->v);
+		switch (node.op) 
+		{
+		case UnOp::Plus:
+			return val;
+		case UnOp::Neg:
+			return -val;
+		}
+		throw std::logic_error("неизвестный оператор");
+	}
+	double operator()(const BinaryNode& node) const
+	{
+		using enum BinOp;
+		
+		double leftVal = std::visit(*this, node.left->v), 
+			   rightVal = std::visit(*this, node.right->v);
+
+		switch (node.op)
+		{
+		case Add:
+			return checked(leftVal + rightVal, node.pos, node.len);
+		case Sub:
+			return checked(leftVal - rightVal, node.pos, node.len);
+		case Mul:
+			return checked(leftVal * rightVal, node.pos, node.len);
+		case Div:
+			if(rightVal == 0) throw EvalError("деление на ноль", node.pos, node.len);
+			return checked(leftVal / rightVal, node.pos, node.len);
+		case Mod:
+			if(rightVal == 0) throw EvalError("деление на ноль", node.pos, node.len);
+			return checked(std::fmod(leftVal, rightVal), node.pos, node.len);
+		case Pow:
+			{
+				double result = std::pow(leftVal, rightVal);
+				if(std::isnan(result)) 
+					throw EvalError("результат не определён", node.pos, node.len);
+				return checked(result, node.pos, node.len);
+			}
+		}
+
+		throw std::logic_error("неизвестный оператор");
 	}
 };
 
@@ -474,8 +473,8 @@ private:
 			std::size_t opPos = current().pos, opLen = current().len;
 			advance();
 
-			result = std::make_unique<BinaryNode>(op, std::move(result), parseUnary(),
-					opPos, opLen);
+			result = std::make_unique<Node>(Node{BinaryNode{op, std::move(result),
+					parseUnary(), opPos, opLen}});
 		}
 
 		return result;
@@ -484,7 +483,7 @@ private:
 	std::unique_ptr<Node> parseUnary()
 	{
 		int cnt = 0;
-		std::size_t opPos = current().pos, opLen;
+		std::size_t opPos = current().pos, opLen = 1;
 
 		while(current().tag == Tag::Plus || current().tag == Tag::Minus)
 		{
@@ -493,16 +492,8 @@ private:
 			advance();
 		}
 
-		return std::make_unique<UnaryNode>(cnt % 2 ? UnOp::Neg : UnOp::Plus, parsePower(), opPos, opLen);
-
-		/*if(current().tag == Tag::Plus || current().tag == Tag::Minus)
-		{
-			UnOp op = tagToUnary(current().tag);
-			std::size_t opPos = current().pos, opLen = current().len;
-			advance();
-			return std::make_unique<UnaryNode>(op, parseUnary(), opPos, opLen);
-		}
-		else return parsePower();*/
+		return std::make_unique<Node>(Node{UnaryNode{cnt % 2 ? UnOp::Neg : UnOp::Plus,
+				parsePower(), opPos, opLen}});
 	}
 
 	std::unique_ptr<Node> parseTerm()
@@ -516,8 +507,8 @@ private:
 			std::size_t opPos = current().pos, opLen = current().len;
 			advance();
 
-			result = std::make_unique<BinaryNode>(op, std::move(result), parseUnary(),
-					opPos, opLen);
+			result = std::make_unique<Node>(Node{BinaryNode{op, std::move(result), 
+					parseUnary(), opPos, opLen}});
 		}
 
 		return result;
@@ -533,8 +524,8 @@ private:
 			std::size_t opPos = current().pos, opLen = current().len;
 			advance();
 			
-			result = std::make_unique<BinaryNode>(op, std::move(result), parseTerm(),
-					opPos, opLen);
+			result = std::make_unique<Node>(Node{BinaryNode{op, std::move(result), 
+					parseTerm(), opPos, opLen}});
 		}
 
 		return result;
@@ -547,14 +538,14 @@ private:
 		switch (current().tag)
 		{
 		case Tag::Number:
-			node = std::make_unique<NumberNode>(current().text, current().pos,
-					current().len);
+			node = std::make_unique<Node>(Node{NumberNode{current().text,
+					current().pos, current().len}});
 			advance();
 			return node;
 
 		case Tag::Ident:
-			node = std::make_unique<IdentNode>(current().text, current().pos,
-					current().len);
+			node = std::make_unique<Node>(Node{IdentNode{current().text,
+					current().pos, current().len}});
 			advance();
 			return node;
 
@@ -579,6 +570,15 @@ private:
 
 };
 
+void print(const Node& node, std::ostream& out)
+{
+	std::visit(PrintVisitor{out}, node.v);
+}
+
+double eval(const Node& node, const Env& env)
+{
+	return std::visit(EvalVisitor{env}, node.v);
+}
 
 int main()
 {
@@ -591,7 +591,8 @@ int main()
 		{
 			Parser parser(lexer(s));
 			std::unique_ptr<Node> tree = parser.parse();
-			double result = tree->eval(Idents);
+
+			double result = eval(*tree, Idents);
 
 			if(interactive)	
 				std::cout << "\x1b[A\r" << s << " = " << result << "\n\n";
