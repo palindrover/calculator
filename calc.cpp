@@ -19,7 +19,7 @@
 
 expr -> term ( ('+' | '-') term )*
 term -> unary ( ('*' | '/' | '%') unary )*
-unary -> ('+' | '-') unary | power
+unary -> ('+' | '-')* power
 power -> primary [ '^' unary ]
 primary -> Number | Ident | '(' expr ')'
 
@@ -483,14 +483,26 @@ private:
 
 	std::unique_ptr<Node> parseUnary()
 	{
-		if(current().tag == Tag::Plus || current().tag == Tag::Minus)
+		int cnt = 0;
+		std::size_t opPos = current().pos, opLen;
+
+		while(current().tag == Tag::Plus || current().tag == Tag::Minus)
+		{
+			if(current().tag == Tag::Minus) cnt++;
+			opLen = current().pos - opPos;
+			advance();
+		}
+
+		return std::make_unique<UnaryNode>(cnt % 2 ? UnOp::Neg : UnOp::Plus, parsePower(), opPos, opLen);
+
+		/*if(current().tag == Tag::Plus || current().tag == Tag::Minus)
 		{
 			UnOp op = tagToUnary(current().tag);
 			std::size_t opPos = current().pos, opLen = current().len;
 			advance();
 			return std::make_unique<UnaryNode>(op, parseUnary(), opPos, opLen);
 		}
-		else return parsePower();
+		else return parsePower();*/
 	}
 
 	std::unique_ptr<Node> parseTerm()
