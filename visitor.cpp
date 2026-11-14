@@ -1,4 +1,5 @@
 #include "visitor.h"
+#include "errors.h"
 
 double checked(double x, std::size_t pos, std::size_t len)
 {
@@ -29,7 +30,6 @@ void PrintVisitor::operator()(const BinaryNode& node) const
 	std::visit(*this, node.right->v);
 	out << ")";
 }
-void PrintVisitor::operator()(const VarNode& node) const {out << node.name;}
 void PrintVisitor::operator()(const AssignNode& node) const 
 {
 	out << node.name << " = " << node.value;
@@ -42,10 +42,9 @@ double EvalVisitor::operator()(const NumberNode& node) const
 }
 double EvalVisitor::operator()(const IdentNode& node)const
 {
-	auto it = env.find(node.text);
-	if(it == env.end()) throw EvalError(std::string("неизвестный идентификатор ") + 
-			node.text, node.pos, node.len);
-	return it->second;
+	if(auto it = env.find(node.text); it != env.end()) return it->second;
+	if(auto it = vars.find(node.text); it != vars.end()) return it->second;
+	throw EvalError("неизвестный индентификатор " + node.text, node.pos, node.len);
 }
 double EvalVisitor::operator()(const UnaryNode& node) const
 {
@@ -91,13 +90,7 @@ double EvalVisitor::operator()(const BinaryNode& node) const
 
 	throw std::logic_error("неизвестный оператор");
 }
-double EvalVisitor::operator()(const VarNode& node) const
-{
-	auto it = vars.find(node.name);
-	if(it == vars.end()) throw EvalError("неизвестная переменная " + node.name,
-			node.pos, node.len);
-	return it->second;
-}
+
 double EvalVisitor::operator()(const AssignNode& node) const
 {
 	if(env.contains(node.name)) 

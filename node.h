@@ -14,12 +14,6 @@ struct AssignNode
 	std::size_t pos, len;
 };
 
-struct VarNode
-{
-	std::string name;
-	std::size_t pos, len;
-};
-
 struct BinaryNode
 {
 	BinOp op;
@@ -48,5 +42,5 @@ struct IdentNode
 
 struct Node
 {
-	std::variant<NumberNode, IdentNode, UnaryNode, BinaryNode, VarNode, AssignNode> v;
+	std::variant<NumberNode, IdentNode, UnaryNode, BinaryNode, AssignNode> v;
 };

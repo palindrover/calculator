@@ -17,7 +17,6 @@ struct PrintVisitor
 	void operator()(const IdentNode& node) const;	
 	void operator()(const UnaryNode& node) const;
 	void operator()(const BinaryNode& node) const;
-	void operator()(const VarNode& node) const;
 	void operator()(const AssignNode& node) const;
 };
 
@@ -30,7 +29,6 @@ struct EvalVisitor
 	double operator()(const IdentNode& node) const;
 	double operator()(const UnaryNode& node) const;
 	double operator()(const BinaryNode& node) const;
-	double operator()(const VarNode& node) const;
 	double operator()(const AssignNode& node) const;
 };
 
