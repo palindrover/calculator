@@ -1,5 +1,7 @@
 ## Грамматика
 
+statement &rarr; Ident '=' expr
+
 expr &rarr; term ( ('+' | '-') term )*
 
 term &rarr; unary ( ('\*' | '/' | '%') unary )*
